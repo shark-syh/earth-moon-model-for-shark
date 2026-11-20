@@ -336,6 +336,11 @@
             astroMoon.name + ' ' + Math.round(astroMoon.illum * 100) + '%';
         document.getElementById('hud-age').innerText = astroMoon.age.toFixed(1) + ' d';
 
+        // 初始相机视角：侧对太阳，让晨昏线落在视野正中（昼/夜各半）
+        const sideView = new THREE.Vector3(-astroSun.dir.z, 0, astroSun.dir.x).normalize();
+        const BASE_AZIMUTH = Math.atan2(sideView.x, sideView.z);
+        const BASE_POLAR = Math.PI / 2 - 0.22;   // 略微俯视
+
         // ==========================================
         // 3. 全息粒子地球 Shader
         // ==========================================
@@ -462,13 +467,17 @@
                 float alpha = smoothstep(0.5, 0.1, dist) * mix(0.6, 0.9, vChaos);
                 
                 vec3 lightDir = normalize(uSunPos - vWorldPos);
-                float diffuse = max(dot(normalize(vNormal), lightDir), 0.0);
-                
-                float ambient = 0.05; 
-                float lightIntensity = diffuse + ambient;
+                float ndl = dot(normalize(vNormal), lightDir);
+
+                // 清晰晨昏线 + 蒙影带（与实体模式一致）
+                float day = smoothstep(-0.02, 0.04, ndl);
+                float diffuse = max(ndl, 0.0);
+                float twilight = smoothstep(-0.18, -0.01, ndl) * (1.0 - smoothstep(0.01, 0.22, ndl));
 
                 vec3 texColor = texture2D(uEarthTex, vUv).rgb;
-                vec3 finalColor = texColor * lightIntensity * 1.5; 
+                vec3 dayColor = texColor * (0.3 + 0.9 * diffuse);
+                vec3 nightColor = texColor * 0.04 * vec3(0.55, 0.70, 1.0);
+                vec3 finalColor = mix(nightColor, dayColor, day) + vec3(1.0, 0.42, 0.15) * twilight * 0.5;
                 
                 gl_FragColor = vec4(finalColor * vBrightness, alpha);
             }
@@ -529,15 +538,65 @@
         hologramGroup.add(earthParticleSystem);
 
         // ==========================================
-        // 4. 纯模型系统 (真正的 3D 实体凹凸山脉)
+        // 4. 实体地球 + 真实晨昏线 (Terminator) Shader
         // ==========================================
+        const solidVertexShader = `
+            uniform sampler2D uDispTex;
+            varying vec2 vUv;
+            varying vec3 vWorldNormal;
+            varying vec3 vWorldPos;
+            void main() {
+                vUv = uv;
+                // 凹凸山脉：沿法线按高度图抬升
+                float elevation = texture2D(uDispTex, uv).r;
+                vec3 displaced = position + normal * (elevation * 0.2);
+                vec4 wp = modelMatrix * vec4(displaced, 1.0);
+                vWorldPos = wp.xyz;
+                vWorldNormal = normalize(mat3(modelMatrix) * normal);
+                gl_Position = projectionMatrix * viewMatrix * wp;
+            }
+        `;
+        const solidFragmentShader = `
+            uniform sampler2D uEarthTex;
+            uniform vec3 uSunPos;
+            varying vec2 vUv;
+            varying vec3 vWorldNormal;
+            varying vec3 vWorldPos;
+
+            void main() {
+                vec3 N = normalize(vWorldNormal);
+                vec3 L = normalize(uSunPos - vWorldPos);   // 指向真实太阳
+                float ndl = dot(N, L);
+
+                // 清晰晨昏线：由真实太阳方向决定，世界空间固定
+                float day = smoothstep(-0.015, 0.03, ndl);
+
+                vec3 tex = texture2D(uEarthTex, vUv).rgb;
+
+                // 昼面：按入射角的漫反射
+                float diffuse = max(ndl, 0.0);
+                vec3 dayColor = tex * (0.25 + 0.9 * diffuse);
+
+                // 晨昏蒙影带（日出/日落的暖橙色）
+                float twilight = smoothstep(-0.16, -0.01, ndl) * (1.0 - smoothstep(0.01, 0.20, ndl));
+                vec3 twiColor = vec3(1.0, 0.42, 0.15) * twilight * 0.55;
+
+                // 夜面：极暗冷蓝 + 微弱地球反照
+                vec3 nightColor = tex * 0.035 * vec3(0.55, 0.70, 1.0);
+
+                vec3 color = mix(nightColor, dayColor, day) + twiColor;
+                gl_FragColor = vec4(color, 1.0);
+            }
+        `;
         const solidEarthGeo = new THREE.SphereGeometry(3.0, 512, 512);
-        const solidEarthMat = new THREE.MeshStandardMaterial({
-            map: earthTexture,
-            displacementMap: earthDispTexture, 
-            displacementScale: 0.2,            
-            roughness: 0.8,
-            metalness: 0.1
+        const solidEarthMat = new THREE.ShaderMaterial({
+            uniforms: {
+                uEarthTex: { value: earthTexture },
+                uDispTex: { value: earthDispTexture },
+                uSunPos: { value: sunPos }
+            },
+            vertexShader: solidVertexShader,
+            fragmentShader: solidFragmentShader
         });
         const solidEarthMesh = new THREE.Mesh(solidEarthGeo, solidEarthMat);
         hologramGroup.add(solidEarthMesh);
@@ -642,8 +701,11 @@
         let targetScale = 1.0;
         let currentScale = 1.0;
         
-        let targetSceneRotY = 0;
-        let targetSceneRotX = 0;
+        // 相机绕行视角（球坐标）；晨昏线由真实太阳方向固定在世界空间
+        let targetAzimuth = BASE_AZIMUTH;
+        let targetPolar = BASE_POLAR;
+        let currentAzimuth = BASE_AZIMUTH;
+        let currentPolar = BASE_POLAR;
         let isHandPresent = false;
 
         function getDistance(p1, p2) {
@@ -676,11 +738,10 @@
                 
                 targetScale = 0.6 + openness * 6.4;
 
-                let handX = landmarks[9].x; 
-                let handY = landmarks[9].y;
-                
-                targetSceneRotY = -(handX - 0.5) * Math.PI * 3.5; 
-                targetSceneRotX = (handY - 0.5) * Math.PI * 2.0;
+                // 手的位置 → 相机绕行角度（换观察视角），晨昏线不动
+                targetAzimuth = BASE_AZIMUTH - (handX - 0.5) * Math.PI * 2.2;
+                targetPolar = Math.max(0.15, Math.min(Math.PI - 0.15,
+                    BASE_POLAR + (handY - 0.5) * Math.PI * 1.4));
 
             } else {
                 isHandPresent = false;
@@ -730,18 +791,28 @@
             // 【重中之重，修复Bug】将插值计算好的 Scale 正确应用给纯物理地球模型！
             solidEarthMesh.scale.set(currentScale, currentScale, currentScale);
 
+            // 无手势时：地球自转 + 相机缓慢环绕，自动展示晨昏线与不同视角
             if (!isHandPresent) {
                 currentEarthRot -= 0.002; 
-                targetSceneRotY += 0.002; 
-                targetSceneRotX += (0 - targetSceneRotX) * 0.02; 
+                targetAzimuth += 0.0012; 
+                targetPolar += (BASE_POLAR - targetPolar) * 0.02; 
             }
 
-            // 同步自转角度
+            // 同步自转角度（仅地表纹理自转，晨昏线在世界空间保持真实朝向）
             solidEarthMesh.rotation.y = currentEarthRot;
             uniforms.uEarthRot.value = currentEarthRot;
 
-            hologramGroup.rotation.y += (targetSceneRotY - hologramGroup.rotation.y) * 0.05;
-            hologramGroup.rotation.x += (targetSceneRotX - hologramGroup.rotation.x) * 0.05;
+            // 相机绕地球公转 —— 换视角，而非旋转地球
+            currentAzimuth += (targetAzimuth - currentAzimuth) * 0.06;
+            currentPolar += (targetPolar - currentPolar) * 0.06;
+            // 相机距离随缩放联动，保证放大时地球不会被穿入
+            const camRadius = 13 + currentScale * 7.2;
+            camera.position.set(
+                camRadius * Math.sin(currentPolar) * Math.sin(currentAzimuth),
+                camRadius * Math.cos(currentPolar),
+                camRadius * Math.sin(currentPolar) * Math.cos(currentAzimuth)
+            );
+            camera.lookAt(0, 0, 0);
 
             const moonOrbitRadius = 6.8;
             // 放慢公转（约 3 分钟一圈），使月相在演示中保持接近 HUD 显示的今日相位
@@ -756,6 +827,12 @@
         }
 
         animate();
+
+        // 兜底：即使摄像头未授权，3D 场景与晨昏线也应可见
+        setTimeout(() => {
+            const ld = document.getElementById('loading');
+            if (ld) ld.style.display = 'none';
+        }, 2500);
 
         window.addEventListener('resize', () => {
             camera.aspect = window.innerWidth / window.innerHeight;
