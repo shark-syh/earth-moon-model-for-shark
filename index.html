@@ -183,10 +183,12 @@
 
         <div id="astro-hud">
             <div class="hud-title">Live Astronomy</div>
-            <div class="hud-row"><span>日期 DATE</span><b id="hud-date">--</b></div>
-            <div class="hud-row"><span>太阳直射 SOLAR DEC</span><b id="hud-decl">--</b></div>
+            <div class="hud-row"><span>北京时间 DATE</span><b id="hud-date">--</b></div>
+            <div class="hud-row"><span>太阳直射 SUBSOLAR</span><b id="hud-decl">--</b></div>
             <div class="hud-row"><span>月相 MOON PHASE</span><b id="hud-phase">--</b></div>
             <div class="hud-row"><span>月龄 AGE</span><b id="hud-age">--</b></div>
+            <div class="hud-row"><span>中国 CN (116°E)</span><b id="hud-china">--</b></div>
+            <div class="hud-row"><span>纽约 US (74°W)</span><b id="hud-usa">--</b></div>
         </div>
 
         <div id="loading">
@@ -307,17 +309,44 @@
             return { illum, age, elong, name };
         }
 
-        // 打开页面时锁定一次当前时刻的天文状态
-        const now = new Date();
-        const astroSun = sunPosition(now);
-        const astroMoon = moonPhase(now);
+        // 太阳直射点（subsolar point）：晨昏线的真实物理依据
+        // 直射纬度 = 太阳赤纬（由日期定）；直射经度 = 由当前 UTC 时刻定（地球自转，15°/小时）
+        function subsolarPoint(date) {
+            const n = toJulian(date) - 2451545.0;
+            const decl = sunPosition(date).decl * DEG;              // 直射纬度（弧度）
+            const utcH = date.getUTCHours() + date.getUTCMinutes() / 60 + date.getUTCSeconds() / 3600;
+            const L = ((280.460 + 0.9856474 * n) % 360) * DEG;
+            // 均时差 EoT（分钟）：真太阳时与平太阳时之差
+            const eot = 9.87 * Math.sin(2 * L) - 7.53 * Math.cos(L) - 1.5 * Math.sin(L);
+            const trueSolarUTC = utcH + eot / 60;
+            let lonDeg = (12 - trueSolarUTC) * 15;                   // 直射经度，东经为正
+            lonDeg = ((lonDeg + 180) % 360 + 360) % 360 - 180;       // 归一化 [-180,180)
+            return { lat: decl, lon: lonDeg * DEG, latDeg: decl * RAD, lonDeg, eot };
+        }
 
-        // 太阳方向：真实天文 * 距离，驱动昼夜线与光照
+        // 地表某点的太阳高度角：sin(h) = sinφ·sinδ + cosφ·cosδ·cos(λ-λ☉)
+        function solarElevation(latDeg, lonDeg, sub) {
+            const p = latDeg * DEG, l = lonDeg * DEG;
+            return Math.sin(p) * Math.sin(sub.lat) + Math.cos(p) * Math.cos(sub.lat) * Math.cos(l - sub.lon);
+        }
+
+        let sub = subsolarPoint(new Date());
+        const astroMoon = moonPhase(new Date());
+
+        // 太阳本地方向（与地表经纬度同坐标系）：X=0°经线, -Z=90°E, Y=北极
+        const sunLocalDir = new THREE.Vector3(
+            Math.cos(sub.lat) * Math.cos(sub.lon),
+            Math.sin(sub.lat),
+            -Math.cos(sub.lat) * Math.sin(sub.lon)
+        ).normalize();
         const SUN_DISTANCE = 30;
-        const sunPos = astroSun.dir.clone().multiplyScalar(SUN_DISTANCE);
+        const sunPos = sunLocalDir.clone().multiplyScalar(SUN_DISTANCE);  // 本地坐标
+
+        // 太阳球与光源放进 hologramGroup：转模型时太阳随地表一起转，光照关系恒定
         const sunLight = new THREE.DirectionalLight(0xffffee, 2.5);
         sunLight.position.copy(sunPos);
-        scene.add(sunLight);
+        hologramGroup.add(sunLight);
+        hologramGroup.add(sunLight.target);
         const ambientLight = new THREE.AmbientLight(0xffffff, 0.05);
         scene.add(ambientLight);
 
@@ -325,21 +354,34 @@
         const sunMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(2.0, 1.9, 1.7) });
         const sunMesh = new THREE.Mesh(sunGeo, sunMat);
         sunMesh.position.copy(sunPos);
-        scene.add(sunMesh);
+        hologramGroup.add(sunMesh);
 
-        // 填充 HUD
-        document.getElementById('hud-date').innerText =
-            now.getFullYear() + '-' + String(now.getMonth()+1).padStart(2,'0') + '-' + String(now.getDate()).padStart(2,'0');
-        document.getElementById('hud-decl').innerText =
-            (astroSun.decl >= 0 ? '+' : '') + astroSun.decl.toFixed(1) + '°';
-        document.getElementById('hud-phase').innerText =
-            astroMoon.name + ' ' + Math.round(astroMoon.illum * 100) + '%';
-        document.getElementById('hud-age').innerText = astroMoon.age.toFixed(1) + ' d';
+        // 两地观测点（科普验证）：中国北京 / 美国纽约
+        function fmtLon(d) { return Math.abs(d).toFixed(1) + '°' + (d >= 0 ? 'E' : 'W'); }
+        function fmtLat(d) { return Math.abs(d).toFixed(1) + '°' + (d >= 0 ? 'N' : 'S'); }
+        function dayState(h) {
+            if (h > 0) return '昼 DAY';
+            if (h > -0.1045) return '昏/晨 TWILIGHT';   // 太阳在地平线下 6° 内
+            return '夜 NIGHT';
+        }
+        function refreshHud() {
+            const date = new Date();
+            document.getElementById('hud-date').innerText =
+                date.getFullYear() + '-' + String(date.getMonth()+1).padStart(2,'0') + '-' + String(date.getDate()).padStart(2,'0')
+                + ' ' + String(date.getHours()).padStart(2,'0') + ':' + String(date.getMinutes()).padStart(2,'0');
+            document.getElementById('hud-decl').innerText =
+                (sub.latDeg >= 0 ? '+' : '') + sub.latDeg.toFixed(1) + '° ' + fmtLon(sub.lonDeg);
+            document.getElementById('hud-phase').innerText =
+                astroMoon.name + ' ' + Math.round(astroMoon.illum * 100) + '%';
+            document.getElementById('hud-age').innerText = astroMoon.age.toFixed(1) + ' d';
+            const cn = solarElevation(39.9, 116.4, sub);
+            const us = solarElevation(40.7, -74.0, sub);
+            document.getElementById('hud-china').innerText = dayState(cn);
+            document.getElementById('hud-usa').innerText = dayState(us);
+        }
+        refreshHud();
 
-        // 初始相机视角：侧对太阳，让晨昏线落在视野正中（昼/夜各半）
-        const sideView = new THREE.Vector3(-astroSun.dir.z, 0, astroSun.dir.x).normalize();
-        const BASE_AZIMUTH = Math.atan2(sideView.x, sideView.z);
-        const BASE_POLAR = Math.PI / 2 - 0.22;   // 略微俯视
+        const subsolarUniform = { value: new THREE.Vector2(sub.lat, sub.lon) };
 
         // ==========================================
         // 3. 全息粒子地球 Shader
@@ -451,13 +493,15 @@
 
         const fragmentShader = `
             uniform sampler2D uEarthTex;
-            uniform vec3 uSunPos;
+            uniform vec2 uSubsolar;      // (直射纬度, 直射经度)，弧度
             
             varying float vBrightness;
             varying float vChaos;
             varying vec2 vUv;
             varying vec3 vNormal;
             varying vec3 vWorldPos;
+
+            #define PI 3.14159265359
 
             void main() {
                 vec2 center = gl_PointCoord - vec2(0.5);
@@ -466,18 +510,20 @@
                 
                 float alpha = smoothstep(0.5, 0.1, dist) * mix(0.6, 0.9, vChaos);
                 
-                vec3 lightDir = normalize(uSunPos - vWorldPos);
-                float ndl = dot(normalize(vNormal), lightDir);
-
-                // 清晰晨昏线 + 蒙影带（与实体模式一致）
-                float day = smoothstep(-0.02, 0.04, ndl);
-                float diffuse = max(ndl, 0.0);
-                float twilight = smoothstep(-0.18, -0.01, ndl) * (1.0 - smoothstep(0.01, 0.22, ndl));
+                // 贴图像素 → 经纬度（equirectangular：u=经度, v=纬度）
+                float lat = (vUv.y - 0.5) * PI;         // -π/2..π/2
+                float lon = (vUv.x - 0.5) * 2.0 * PI;   // -π..π
+                float sinAlt = sin(lat) * sin(uSubsolar.x)
+                             + cos(lat) * cos(uSubsolar.x) * cos(lon - uSubsolar.y);
+                
+                // 真实晨昏线：sinAlt=0 为晨昏圈，与模型旋转无关
+                float day = smoothstep(-0.01, 0.02, sinAlt);
+                float twilight = smoothstep(-0.14, -0.01, sinAlt) * (1.0 - smoothstep(0.01, 0.16, sinAlt));
 
                 vec3 texColor = texture2D(uEarthTex, vUv).rgb;
-                vec3 dayColor = texColor * (0.3 + 0.9 * diffuse);
-                vec3 nightColor = texColor * 0.04 * vec3(0.55, 0.70, 1.0);
-                vec3 finalColor = mix(nightColor, dayColor, day) + vec3(1.0, 0.42, 0.15) * twilight * 0.5;
+                vec3 dayColor = texColor * (0.35 + 0.75 * max(sinAlt, 0.0));
+                vec3 nightColor = texColor * 0.045 * vec3(0.55, 0.70, 1.0);
+                vec3 finalColor = mix(nightColor, dayColor, day) + vec3(1.0, 0.42, 0.15) * twilight * 0.45;
                 
                 gl_FragColor = vec4(finalColor * vBrightness, alpha);
             }
@@ -523,7 +569,7 @@
             uEarthRot: { value: 0.0 }, 
             uEarthTex: { value: earthTexture },
             uDispTex: { value: earthDispTexture },
-            uSunPos: { value: sunPos } 
+            uSubsolar: subsolarUniform
         };
 
         const earthMaterial = new THREE.ShaderMaterial({
@@ -558,31 +604,29 @@
         `;
         const solidFragmentShader = `
             uniform sampler2D uEarthTex;
-            uniform vec3 uSunPos;
+            uniform vec2 uSubsolar;      // (直射纬度, 直射经度)，弧度
             varying vec2 vUv;
             varying vec3 vWorldNormal;
             varying vec3 vWorldPos;
 
-            void main() {
-                vec3 N = normalize(vWorldNormal);
-                vec3 L = normalize(uSunPos - vWorldPos);   // 指向真实太阳
-                float ndl = dot(N, L);
+            #define PI 3.14159265359
 
-                // 清晰晨昏线：由真实太阳方向决定，世界空间固定
-                float day = smoothstep(-0.015, 0.03, ndl);
+            void main() {
+                // 贴图像素 → 地理经纬度（equirectangular, u=0.5 为本初子午线）
+                float lat = (vUv.y - 0.5) * PI;         // -π/2..π/2
+                float lon = (vUv.x - 0.5) * 2.0 * PI;   // -π..π
+                // 太阳高度角：sin(h)=sinφ·sinδ+cosφ·cosδ·cos(λ-λ☉)
+                float sinAlt = sin(lat) * sin(uSubsolar.x)
+                             + cos(lat) * cos(uSubsolar.x) * cos(lon - uSubsolar.y);
+
+                // 真实晨昏线：sinAlt=0 为晨昏圈，与模型旋转无关
+                float day = smoothstep(-0.01, 0.02, sinAlt);
+                float twilight = smoothstep(-0.14, -0.01, sinAlt) * (1.0 - smoothstep(0.01, 0.16, sinAlt));
 
                 vec3 tex = texture2D(uEarthTex, vUv).rgb;
-
-                // 昼面：按入射角的漫反射
-                float diffuse = max(ndl, 0.0);
-                vec3 dayColor = tex * (0.25 + 0.9 * diffuse);
-
-                // 晨昏蒙影带（日出/日落的暖橙色）
-                float twilight = smoothstep(-0.16, -0.01, ndl) * (1.0 - smoothstep(0.01, 0.20, ndl));
-                vec3 twiColor = vec3(1.0, 0.42, 0.15) * twilight * 0.55;
-
-                // 夜面：极暗冷蓝 + 微弱地球反照
-                vec3 nightColor = tex * 0.035 * vec3(0.55, 0.70, 1.0);
+                vec3 dayColor = tex * (0.32 + 0.8 * max(sinAlt, 0.0));
+                vec3 twiColor = vec3(1.0, 0.42, 0.15) * twilight * 0.5;
+                vec3 nightColor = tex * 0.04 * vec3(0.55, 0.70, 1.0);
 
                 vec3 color = mix(nightColor, dayColor, day) + twiColor;
                 gl_FragColor = vec4(color, 1.0);
@@ -593,7 +637,7 @@
             uniforms: {
                 uEarthTex: { value: earthTexture },
                 uDispTex: { value: earthDispTexture },
-                uSunPos: { value: sunPos }
+                uSubsolar: subsolarUniform
             },
             vertexShader: solidVertexShader,
             fragmentShader: solidFragmentShader
@@ -675,7 +719,7 @@
         hologramGroup.add(moon);
 
         // 月球初始轨道角：对齐到今天的真实月相（伸长 elong）
-        const sunAzimuth = Math.atan2(astroSun.dir.x, astroSun.dir.z);
+        const sunAzimuth = Math.atan2(sunLocalDir.x, sunLocalDir.z);
         const MOON_BASE_ANGLE = sunAzimuth + astroMoon.elong * DEG;
 
         // ==========================================
@@ -701,11 +745,10 @@
         let targetScale = 1.0;
         let currentScale = 1.0;
         
-        // 相机绕行视角（球坐标）；晨昏线由真实太阳方向固定在世界空间
-        let targetAzimuth = BASE_AZIMUTH;
-        let targetPolar = BASE_POLAR;
-        let currentAzimuth = BASE_AZIMUTH;
-        let currentPolar = BASE_POLAR;
+        // 手势旋转地球模型（纯演示视角）；晨昏线由真实时刻决定，与旋转无关
+        const CHINA_FACING_Y = 2.68;   // 初始朝向：中国正对相机
+        let targetRotY = CHINA_FACING_Y;
+        let targetRotX = 0;
         let isHandPresent = false;
 
         function getDistance(p1, p2) {
@@ -738,10 +781,11 @@
                 
                 targetScale = 0.6 + openness * 6.4;
 
-                // 手的位置 → 相机绕行角度（换观察视角），晨昏线不动
-                targetAzimuth = BASE_AZIMUTH - (handX - 0.5) * Math.PI * 2.2;
-                targetPolar = Math.max(0.15, Math.min(Math.PI - 0.15,
-                    BASE_POLAR + (handY - 0.5) * Math.PI * 1.4));
+                // 手的位置 → 旋转地球模型（仅演示视角），不影响晨昏线地理分布
+                const handX = landmarks[9].x;
+                const handY = landmarks[9].y;
+                targetRotY = CHINA_FACING_Y - (handX - 0.5) * Math.PI * 2.2;
+                targetRotX = Math.max(-1.0, Math.min(1.0, (handY - 0.5) * Math.PI * 1.2));
 
             } else {
                 isHandPresent = false;
@@ -778,7 +822,7 @@
         // 8. 渲染与物理循环
         // ==========================================
         const clock = new THREE.Clock();
-        let currentEarthRot = 0;
+        let lastSubUpdate = -1e9;
 
         function animate() {
             requestAnimationFrame(animate);
@@ -788,30 +832,33 @@
             uniforms.uTime.value = elapsedTime;
             uniforms.uScale.value = currentScale;
 
-            // 【重中之重，修复Bug】将插值计算好的 Scale 正确应用给纯物理地球模型！
             solidEarthMesh.scale.set(currentScale, currentScale, currentScale);
+            uniforms.uEarthRot.value = 0;   // 停自转：地表经纬与晨昏线锁定真实地理
 
-            // 无手势时：地球自转 + 相机缓慢环绕，自动展示晨昏线与不同视角
-            if (!isHandPresent) {
-                currentEarthRot -= 0.002; 
-                targetAzimuth += 0.0012; 
-                targetPolar += (BASE_POLAR - targetPolar) * 0.02; 
+            // 定时刷新太阳直射点 → 晨昏线随真实时间移动（每 30 秒）
+            if (elapsedTime - lastSubUpdate > 30) {
+                lastSubUpdate = elapsedTime;
+                sub = subsolarPoint(new Date());
+                subsolarUniform.value.set(sub.lat, sub.lon);
+                sunLocalDir.set(
+                    Math.cos(sub.lat) * Math.cos(sub.lon),
+                    Math.sin(sub.lat),
+                    -Math.cos(sub.lat) * Math.sin(sub.lon)
+                ).normalize();
+                sunPos.copy(sunLocalDir).multiplyScalar(SUN_DISTANCE);
+                sunMesh.position.copy(sunPos);
+                sunLight.position.copy(sunPos);
+                refreshHud();
             }
 
-            // 同步自转角度（仅地表纹理自转，晨昏线在世界空间保持真实朝向）
-            solidEarthMesh.rotation.y = currentEarthRot;
-            uniforms.uEarthRot.value = currentEarthRot;
+            // 手势旋转地球模型（仅演示视角）；晨昏线由 UV 经纬度算，与旋转无关
+            if (!isHandPresent) targetRotY += 0.0006;   // 无手势时极慢展示
+            hologramGroup.rotation.y += (targetRotY - hologramGroup.rotation.y) * 0.06;
+            hologramGroup.rotation.x += (targetRotX - hologramGroup.rotation.x) * 0.06;
 
-            // 相机绕地球公转 —— 换视角，而非旋转地球
-            currentAzimuth += (targetAzimuth - currentAzimuth) * 0.06;
-            currentPolar += (targetPolar - currentPolar) * 0.06;
-            // 相机距离随缩放联动，保证放大时地球不会被穿入
+            // 相机固定看向原点；缩放时相机距离联动，避免穿入地球
             const camRadius = 13 + currentScale * 7.2;
-            camera.position.set(
-                camRadius * Math.sin(currentPolar) * Math.sin(currentAzimuth),
-                camRadius * Math.cos(currentPolar),
-                camRadius * Math.sin(currentPolar) * Math.cos(currentAzimuth)
-            );
+            camera.position.set(0, 0, camRadius);
             camera.lookAt(0, 0, 0);
 
             const moonOrbitRadius = 6.8;
