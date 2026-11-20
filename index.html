@@ -778,10 +778,11 @@
                 
                 targetScale = 0.6 + openness * 6.4;
 
-                // 手的位置 → 旋转地球模型（仅演示视角），不影响晨昏线地理分布
+                // 左右拖动 → 地球绕 Y 轴转动（仅演示视角），晨昏线地理分布不变
+                // 手部 x 实际可用范围窄，放大系数以获得更大转角
                 const handX = landmarks[9].x;
                 const handY = landmarks[9].y;
-                targetRotY = CHINA_FACING_Y - (handX - 0.5) * Math.PI * 2.2;
+                targetRotY = CHINA_FACING_Y - (handX - 0.5) * Math.PI * 5.0;
                 targetRotX = Math.max(-1.0, Math.min(1.0, (handY - 0.5) * Math.PI * 1.2));
 
             } else {
