@@ -853,8 +853,8 @@
             hologramGroup.rotation.y += (targetRotY - hologramGroup.rotation.y) * 0.06;
             hologramGroup.rotation.x += (targetRotX - hologramGroup.rotation.x) * 0.06;
 
-            // 相机固定看向原点；缩放时相机距离联动，避免穿入地球
-            const camRadius = 13 + currentScale * 7.2;
+            // 相机固定看向原点；距离随缩放缓慢增长，让张手放大更明显且不穿模
+            const camRadius = 17.5 + currentScale * 2.6;
             camera.position.set(0, 0, camRadius);
             camera.lookAt(0, 0, 0);
 
