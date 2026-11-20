@@ -1,0 +1,782 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EARTH & MOON - 3D Ultra</title>
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background-color: #010102; 
+            font-family: 'Helvetica Neue', Arial, sans-serif;
+        }
+        #canvas-container {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+        }
+        #ui-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 10;
+            pointer-events: none;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            padding: 30px;
+            box-sizing: border-box;
+        }
+        .header {
+            color: rgba(255, 255, 255, 0.8);
+            text-transform: uppercase;
+            letter-spacing: 4px;
+            font-size: 14px;
+            text-shadow: 0 0 10px rgba(0, 200, 255, 0.5);
+        }
+        #cam-preview {
+            position: absolute;
+            bottom: 30px;
+            left: 30px;
+            width: 160px;
+            height: 120px;
+            border-radius: 12px;
+            overflow: hidden;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            box-shadow: 0 0 20px rgba(0, 0, 0, 0.8);
+            background: #111;
+        }
+        #video-feed {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            transform: scaleX(-1);
+            filter: blur(8px); 
+        }
+        .cam-label {
+            position: absolute;
+            bottom: 8px;
+            left: 8px;
+            color: #ffcc00; 
+            font-size: 10px;
+            font-weight: bold;
+            letter-spacing: 1px;
+            background: rgba(0, 0, 0, 0.6);
+            padding: 4px 8px;
+            border-radius: 4px;
+            transition: color 0.3s ease;
+            text-transform: uppercase;
+        }
+        .ctrl-btn {
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            color: #fff;
+            padding: 12px 24px;
+            border-radius: 30px;
+            cursor: pointer;
+            font-size: 12px;
+            letter-spacing: 2px;
+            text-transform: uppercase;
+            transition: all 0.3s ease;
+            pointer-events: auto;
+        }
+        .ctrl-btn:hover {
+            background: rgba(255, 255, 255, 0.2);
+            box-shadow: 0 0 15px rgba(255, 255, 255, 0.5);
+            transform: scale(1.05);
+        }
+        #btn-group {
+            position: absolute;
+            bottom: 30px;
+            right: 30px;
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+            pointer-events: auto;
+        }
+        #loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: white;
+            font-size: 18px;
+            letter-spacing: 3px;
+            animation: pulse 1.5s infinite alternate;
+            text-align: center;
+        }
+        .loading-sub {
+            font-size: 12px;
+            color: #888;
+            margin-top: 10px;
+            letter-spacing: 1px;
+        }
+        #astro-hud {
+            position: absolute;
+            top: 30px;
+            right: 30px;
+            min-width: 196px;
+            padding: 14px 18px;
+            border-radius: 14px;
+            background: rgba(10, 14, 22, 0.42);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 1px solid rgba(160, 220, 255, 0.18);
+            box-shadow: 0 0 24px rgba(0, 150, 220, 0.10);
+            pointer-events: none;
+            color: rgba(255,255,255,0.9);
+        }
+        .hud-title {
+            font-size: 10px;
+            letter-spacing: 3px;
+            color: #7fd4ff;
+            text-transform: uppercase;
+            margin-bottom: 10px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid rgba(160,220,255,0.15);
+        }
+        .hud-row {
+            display: flex;
+            justify-content: space-between;
+            gap: 18px;
+            font-size: 11px;
+            line-height: 1.95;
+            letter-spacing: 1px;
+        }
+        .hud-row span { color: rgba(255,255,255,0.5); }
+        .hud-row b { font-weight: 500; color: #ffd479; }
+
+        @keyframes pulse {
+            0% { opacity: 0.3; }
+            100% { opacity: 1; text-shadow: 0 0 20px rgba(0, 200, 255, 0.8); }
+        }
+    </style>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+</head>
+<body>
+
+    <div id="canvas-container"></div>
+
+    <div id="ui-layer">
+        <div class="header">EARTH & MOON</div>
+
+        <div id="astro-hud">
+            <div class="hud-title">Live Astronomy</div>
+            <div class="hud-row"><span>日期 DATE</span><b id="hud-date">--</b></div>
+            <div class="hud-row"><span>太阳直射 SOLAR DEC</span><b id="hud-decl">--</b></div>
+            <div class="hud-row"><span>月相 MOON PHASE</span><b id="hud-phase">--</b></div>
+            <div class="hud-row"><span>月龄 AGE</span><b id="hud-age">--</b></div>
+        </div>
+
+        <div id="loading">
+            Loading Neural Vision & 3D Topography...
+            <div class="loading-sub">Downloading Ultra-HD assets (Maps & Elevation), please wait.</div>
+        </div>
+        
+        <div id="cam-preview">
+            <video id="video-feed" autoplay playsinline></video>
+            <!-- 修复状态初始文本 -->
+            <div id="cam-label" class="cam-label">Tracking inactive</div>
+        </div>
+
+        <div id="btn-group">
+            <button id="mode-btn" class="ctrl-btn">Mode: Solid Model</button>
+            <button id="fullscreen-btn" class="ctrl-btn">Fullscreen</button>
+        </div>
+    </div>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+        import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+        import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+
+        // ==========================================
+        // 1. 初始化核心环境
+        // ==========================================
+        const container = document.getElementById('canvas-container');
+        const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: "high-performance" });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        container.appendChild(renderer.domElement);
+
+        const scene = new THREE.Scene();
+        scene.fog = new THREE.FogExp2(0x010102, 0.015);
+
+        const hologramGroup = new THREE.Group();
+        scene.add(hologramGroup);
+
+        const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.set(0, 0, 15); 
+
+        const renderScene = new RenderPass(scene, camera);
+        const bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 0.8, 0.3, 0.2);
+        const composer = new EffectComposer(renderer);
+        composer.addPass(renderScene);
+        composer.addPass(bloomPass);
+
+        // ==========================================
+        // 2. 8K 贴图与3D高度图加载
+        // ==========================================
+        const textureLoader = new THREE.TextureLoader();
+        textureLoader.setCrossOrigin('anonymous'); 
+        
+        const earthTexUrl = 'https://cdn.jsdelivr.net/npm/three-globe/example/img/earth-blue-marble.jpg';
+        const earthDispUrl = 'https://cdn.jsdelivr.net/npm/three-globe/example/img/earth-topology.png';
+        const moonTexUrl = 'https://cdn.jsdelivr.net/gh/mrdoob/three.js@master/examples/textures/planets/moon_1024.jpg';
+        
+        const earthTexture = textureLoader.load(earthTexUrl);
+        const earthDispTexture = textureLoader.load(earthDispUrl);
+        const moonTexture = textureLoader.load(moonTexUrl);
+
+        // ==========================================
+        // 2.5 实时天文：太阳方向 / 月相（低精度但足够科普）
+        // ==========================================
+        const DEG = Math.PI / 180;
+        const RAD = 180 / Math.PI;
+
+        // 儒略日（以 UTC 计算，ut 为小时）
+        function toJulian(date) {
+            return date.getTime() / 86400000 + 2440587.5;
+        }
+
+        // 太阳视位置（Meeus 低精度简化）：返回地平黄经 λ、赤纬 δ
+        function sunPosition(date) {
+            const jd = toJulian(date);
+            const n = jd - 2451545.0;                       // J2000 起算天数
+            const L = (280.460 + 0.9856474 * n) % 360;      // 平黄经
+            const g = ((357.528 + 0.9856003 * n) % 360) * DEG; // 平近点角
+            const lambda = L + 1.915 * Math.sin(g) + 0.020 * Math.sin(2 * g); // 视黄经
+            const eps = (23.439 - 0.0000004 * n) * DEG;     // 黄赤交角
+            // 由黄经求赤道坐标单位向量（场景：XZ 为黄道面近似，Y 为天极）
+            const lam = lambda * DEG;
+            const dir = new THREE.Vector3(
+                Math.cos(lam),
+                Math.sin(lam) * Math.sin(eps),
+                Math.sin(lam) * Math.cos(eps)
+            ).normalize();
+            const decl = Math.asin(Math.sin(lam) * Math.sin(eps)) * RAD; // 太阳赤纬
+            return { dir, decl, lambda };
+        }
+
+        // 月相：返回照度比例、月龄(天)、相位角、名称
+        function moonPhase(date) {
+            const jd = toJulian(date);
+            const n = jd - 2451545.0;
+            const L = (218.316 + 13.176396 * n) % 360;      // 月球平黄经
+            const M = (134.963 + 13.064993 * n) % 360;      // 月球平近点角
+            const D = (297.850 + 12.190749 * n) % 360;      // 日月平均伸长
+            const F = (93.272 + 13.229350 * n) % 360;       // 月球纬度 argument
+            const lambda = L + 6.289 * Math.sin(M * DEG);   // 月球黄经（近似）
+            const sun = sunPosition(date);
+            // 相位角 = 月黄经 - 日黄经
+            let phase = ((lambda - sun.lambda) % 360 + 360) % 360;
+            const illum = (1 - Math.cos(phase * DEG)) / 2;  // 照度 0~1
+            const age = phase / 360 * 29.530588;            // 月龄（天）
+            const elong = phase;                             // 日月伸长
+            let name;
+            if (phase < 11 || phase >= 349) name = '新月';
+            else if (phase < 78) name = '娥眉月';
+            else if (phase < 101) name = '上弦月';
+            else if (phase < 168) name = '盈凸月';
+            else if (phase < 192) name = '满月';
+            else if (phase < 259) name = '亏凸月';
+            else if (phase < 282) name = '下弦月';
+            else name = '残月';
+            return { illum, age, elong, name };
+        }
+
+        // 打开页面时锁定一次当前时刻的天文状态
+        const now = new Date();
+        const astroSun = sunPosition(now);
+        const astroMoon = moonPhase(now);
+
+        // 太阳方向：真实天文 * 距离，驱动昼夜线与光照
+        const SUN_DISTANCE = 30;
+        const sunPos = astroSun.dir.clone().multiplyScalar(SUN_DISTANCE);
+        const sunLight = new THREE.DirectionalLight(0xffffee, 2.5);
+        sunLight.position.copy(sunPos);
+        scene.add(sunLight);
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.05);
+        scene.add(ambientLight);
+
+        const sunGeo = new THREE.SphereGeometry(1.5, 32, 32);
+        const sunMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(2.0, 1.9, 1.7) });
+        const sunMesh = new THREE.Mesh(sunGeo, sunMat);
+        sunMesh.position.copy(sunPos);
+        scene.add(sunMesh);
+
+        // 填充 HUD
+        document.getElementById('hud-date').innerText =
+            now.getFullYear() + '-' + String(now.getMonth()+1).padStart(2,'0') + '-' + String(now.getDate()).padStart(2,'0');
+        document.getElementById('hud-decl').innerText =
+            (astroSun.decl >= 0 ? '+' : '') + astroSun.decl.toFixed(1) + '°';
+        document.getElementById('hud-phase').innerText =
+            astroMoon.name + ' ' + Math.round(astroMoon.illum * 100) + '%';
+        document.getElementById('hud-age').innerText = astroMoon.age.toFixed(1) + ' d';
+
+        // ==========================================
+        // 3. 全息粒子地球 Shader
+        // ==========================================
+        const earthVertexShader = `
+            uniform float uTime;
+            uniform float uScale;
+            uniform float uEarthRot;    
+            uniform sampler2D uDispTex; 
+            
+            attribute float size;
+            attribute vec2 uvCoord;    
+            
+            varying float vBrightness;
+            varying float vChaos;
+            varying vec2 vUv;
+            varying vec3 vNormal;    
+            varying vec3 vWorldPos;  
+
+            vec3 mod289(vec3 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
+            vec4 mod289(vec4 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
+            vec4 permute(vec4 x) { return mod289(((x*34.0)+1.0)*x); }
+            vec4 taylorInvSqrt(vec4 r) { return 1.79284291400159 - 0.85373472095314 * r; }
+            float snoise(vec3 v) {
+                const vec2  C = vec2(1.0/6.0, 1.0/3.0) ;
+                const vec4  D = vec4(0.0, 0.5, 1.0, 2.0);
+                vec3 i  = floor(v + dot(v, C.yyy) );
+                vec3 x0 = v - i + dot(i, C.xxx) ;
+                vec3 g = step(x0.yzx, x0.xyz);
+                vec3 l = 1.0 - g;
+                vec3 i1 = min( g.xyz, l.zxy );
+                vec3 i2 = max( g.xyz, l.zxy );
+                vec3 x1 = x0 - i1 + C.xxx;
+                vec3 x2 = x0 - i2 + C.yyy;
+                vec3 x3 = x0 - D.yyy;
+                i = mod289(i);
+                vec4 p = permute( permute( permute(
+                            i.z + vec4(0.0, i1.z, i2.z, 1.0 ))
+                          + i.y + vec4(0.0, i1.y, i2.y, 1.0 ))
+                          + i.x + vec4(0.0, i1.x, i2.x, 1.0 ));
+                float n_ = 0.142857142857;
+                vec3  ns = n_ * D.wyz - D.xzx;
+                vec4 j = p - 49.0 * floor(p * ns.z * ns.z);
+                vec4 x_ = floor(j * ns.z);
+                vec4 y_ = floor(j - 7.0 * x_ );
+                vec4 x = x_ *ns.x + ns.yyyy;
+                vec4 y = y_ *ns.x + ns.yyyy;
+                vec4 h = 1.0 - abs(x) - abs(y);
+                vec4 b0 = vec4( x.xy, y.xy );
+                vec4 b1 = vec4( x.zw, y.zw );
+                vec4 s0 = floor(b0)*2.0 + 1.0;
+                vec4 s1 = floor(b1)*2.0 + 1.0;
+                vec4 sh = -step(h, vec4(0.0));
+                vec4 a0 = b0.xzyw + s0.xzyw*sh.xxyy ;
+                vec4 a1 = b1.xzyw + s1.xzyw*sh.zzww ;
+                vec3 p0 = vec3(a0.xy,h.x);
+                vec3 p1 = vec3(a0.zw,h.y);
+                vec3 p2 = vec3(a1.xy,h.z);
+                vec3 p3 = vec3(a1.zw,h.w);
+                vec4 norm = taylorInvSqrt(vec4(dot(p0,p0), dot(p1,p1), dot(p2, p2), dot(p3,p3)));
+                p0 *= norm.x;  p1 *= norm.y;  p2 *= norm.z;  p3 *= norm.w;
+                vec4 m = max(0.6 - vec4(dot(x0,x0), dot(x1,x1), dot(x2,x2), dot(x3,x3)), 0.0);
+                m = m * m;
+                return 42.0 * dot( m*m, vec4( dot(p0,x0), dot(p1,x1), dot(p2,x2), dot(p3,x3) ) );
+            }
+
+            void main() {
+                vec3 objectNormal = normalize(position);
+                
+                float elevation = texture2D(uDispTex, uvCoord).r;
+                vec3 pos = position + objectNormal * (elevation * 0.2);
+                float r = length(pos);
+
+                float angle = uEarthRot;
+                float s = sin(angle);
+                float c = cos(angle);
+                mat2 rot = mat2(c, -s, s, c);
+                
+                pos.xz *= rot;
+                objectNormal.xz *= rot; 
+
+                vWorldPos = (modelMatrix * vec4(pos * uScale, 1.0)).xyz;
+                vNormal = normalize((modelMatrix * vec4(objectNormal, 0.0)).xyz);
+
+                pos *= uScale;
+
+                float chaosFactor = smoothstep(4.0, 6.0, uScale);
+                vChaos = chaosFactor;
+                
+                if (chaosFactor > 0.0) {
+                    vec3 noisePos = pos * 3.0 + uTime * 10.0;
+                    vec3 chaoticOffset = vec3(
+                        snoise(noisePos),
+                        snoise(noisePos + vec3(14.3, 52.6, 28.9)),
+                        snoise(noisePos + vec3(88.7, 15.4, 62.1))
+                    );
+                    pos += chaoticOffset * chaosFactor * (r * 0.5 + 1.0) * 1.5;
+                }
+
+                vec4 mvPosition = modelViewMatrix * vec4(pos, 1.0);
+                gl_Position = projectionMatrix * mvPosition;
+
+                vUv = uvCoord;
+                vBrightness = mix(0.5, 1.2, smoothstep(0.5, 5.0, uScale));
+
+                gl_PointSize = size * (300.0 / -mvPosition.z) * mix(0.8, 2.5, chaosFactor);
+            }
+        `;
+
+        const fragmentShader = `
+            uniform sampler2D uEarthTex;
+            uniform vec3 uSunPos;
+            
+            varying float vBrightness;
+            varying float vChaos;
+            varying vec2 vUv;
+            varying vec3 vNormal;
+            varying vec3 vWorldPos;
+
+            void main() {
+                vec2 center = gl_PointCoord - vec2(0.5);
+                float dist = length(center);
+                if (dist > 0.5) discard; 
+                
+                float alpha = smoothstep(0.5, 0.1, dist) * mix(0.6, 0.9, vChaos);
+                
+                vec3 lightDir = normalize(uSunPos - vWorldPos);
+                float diffuse = max(dot(normalize(vNormal), lightDir), 0.0);
+                
+                float ambient = 0.05; 
+                float lightIntensity = diffuse + ambient;
+
+                vec3 texColor = texture2D(uEarthTex, vUv).rgb;
+                vec3 finalColor = texColor * lightIntensity * 1.5; 
+                
+                gl_FragColor = vec4(finalColor * vBrightness, alpha);
+            }
+        `;
+
+        const particleCount = 250000; 
+        const earthGeo = new THREE.BufferGeometry();
+        const positions = new Float32Array(particleCount * 3);
+        const sizes = new Float32Array(particleCount);
+        const uvs = new Float32Array(particleCount * 2);
+
+        for (let i = 0; i < particleCount; i++) {
+            let randU = Math.random();
+            let randV = Math.random();
+            let theta = randU * 2.0 * Math.PI; 
+            let phi = Math.acos(2.0 * randV - 1.0);
+
+            let r = 3.0 + (Math.random() - 0.5) * 0.02; 
+            sizes[i] = Math.random() * 0.8 + 0.2;   
+
+            let x = r * Math.sin(phi) * Math.cos(theta);
+            let y = r * Math.cos(phi); 
+            let z = r * Math.sin(phi) * Math.sin(theta);
+
+            positions[i*3] = x;
+            positions[i*3+1] = y;
+            positions[i*3+2] = z;
+
+            let texV = 1.0 - (phi / Math.PI); 
+            let texU = theta / (2.0 * Math.PI); 
+            
+            uvs[i*2] = texU;
+            uvs[i*2+1] = texV;
+        }
+
+        earthGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+        earthGeo.setAttribute('size', new THREE.BufferAttribute(sizes, 1));
+        earthGeo.setAttribute('uvCoord', new THREE.BufferAttribute(uvs, 2));
+
+        const uniforms = {
+            uTime: { value: 0.0 },
+            uScale: { value: 1.0 },
+            uEarthRot: { value: 0.0 }, 
+            uEarthTex: { value: earthTexture },
+            uDispTex: { value: earthDispTexture },
+            uSunPos: { value: sunPos } 
+        };
+
+        const earthMaterial = new THREE.ShaderMaterial({
+            uniforms: uniforms,
+            vertexShader: earthVertexShader,
+            fragmentShader: fragmentShader,
+            transparent: true,
+            depthWrite: false
+        });
+
+        const earthParticleSystem = new THREE.Points(earthGeo, earthMaterial);
+        hologramGroup.add(earthParticleSystem);
+
+        // ==========================================
+        // 4. 纯模型系统 (真正的 3D 实体凹凸山脉)
+        // ==========================================
+        const solidEarthGeo = new THREE.SphereGeometry(3.0, 512, 512);
+        const solidEarthMat = new THREE.MeshStandardMaterial({
+            map: earthTexture,
+            displacementMap: earthDispTexture, 
+            displacementScale: 0.2,            
+            roughness: 0.8,
+            metalness: 0.1
+        });
+        const solidEarthMesh = new THREE.Mesh(solidEarthGeo, solidEarthMat);
+        hologramGroup.add(solidEarthMesh);
+
+        let isParticleMode = false;
+        earthParticleSystem.visible = false;
+        solidEarthMesh.visible = true;
+
+        const modeBtn = document.getElementById('mode-btn');
+        modeBtn.addEventListener('click', () => {
+            isParticleMode = !isParticleMode;
+            if (isParticleMode) {
+                modeBtn.innerText = "Mode: Particles";
+                earthParticleSystem.visible = true;
+                solidEarthMesh.visible = false;
+            } else {
+                modeBtn.innerText = "Mode: Solid Model";
+                earthParticleSystem.visible = false;
+                solidEarthMesh.visible = true;
+            }
+        });
+
+        // ==========================================
+        // 5. 真实月球 + 晨昏线（明暗分割线）Shader
+        // ==========================================
+        const moonVertexShader = `
+            varying vec2 vUv;
+            varying vec3 vWorldNormal;
+            varying vec3 vWorldPos;
+            void main() {
+                vUv = uv;
+                vec4 wp = modelMatrix * vec4(position, 1.0);
+                vWorldPos = wp.xyz;
+                vWorldNormal = normalize(mat3(modelMatrix) * normal);
+                gl_Position = projectionMatrix * viewMatrix * wp;
+            }
+        `;
+        const moonFragmentShader = `
+            uniform sampler2D uMoonTex;
+            uniform vec3 uSunPos;
+            varying vec2 vUv;
+            varying vec3 vWorldNormal;
+            varying vec3 vWorldPos;
+
+            void main() {
+                vec3 N = normalize(vWorldNormal);
+                vec3 L = normalize(uSunPos - vWorldPos);   // 指向太阳（世界空间）
+                float ndl = dot(N, L);
+
+                // 清晰但不过硬的晨昏线
+                float terminator = smoothstep(-0.035, 0.035, ndl);
+
+                vec3 tex = texture2D(uMoonTex, vUv).rgb;
+                float diffuse = max(ndl, 0.0);
+
+                // 昼面：按入射角明暗
+                vec3 dayColor = tex * (0.15 + 0.85 * diffuse);
+                // 夜面：地球反照（earthshine），淡淡的冷蓝
+                vec3 nightColor = tex * 0.045 * vec3(0.70, 0.82, 1.0);
+
+                vec3 color = mix(nightColor, dayColor, terminator);
+                gl_FragColor = vec4(color, 1.0);
+            }
+        `;
+
+        const moonGeo = new THREE.SphereGeometry(0.5, 96, 96);
+        const moonMat = new THREE.ShaderMaterial({
+            uniforms: {
+                uMoonTex: { value: moonTexture },
+                uSunPos: { value: sunPos }
+            },
+            vertexShader: moonVertexShader,
+            fragmentShader: moonFragmentShader
+        });
+        const moon = new THREE.Mesh(moonGeo, moonMat);
+        hologramGroup.add(moon);
+
+        // 月球初始轨道角：对齐到今天的真实月相（伸长 elong）
+        const sunAzimuth = Math.atan2(astroSun.dir.x, astroSun.dir.z);
+        const MOON_BASE_ANGLE = sunAzimuth + astroMoon.elong * DEG;
+
+        // ==========================================
+        // 6. 宇宙深空
+        // ==========================================
+        const starGeo = new THREE.BufferGeometry();
+        const starCount = 15000;
+        const starPos = new Float32Array(starCount * 3);
+        for(let i=0; i < starCount * 3; i++) {
+            starPos[i] = (Math.random() - 0.5) * 250; 
+        }
+        starGeo.setAttribute('position', new THREE.BufferAttribute(starPos, 3));
+        const starMat = new THREE.PointsMaterial({color: 0xffffff, size: 0.05, transparent:true, opacity: 0.35});
+        const stars = new THREE.Points(starGeo, starMat);
+        hologramGroup.add(stars);
+
+        // ==========================================
+        // 7. 神经网络手势交互
+        // ==========================================
+        const videoElement = document.getElementById('video-feed');
+        const camLabel = document.getElementById('cam-label');
+        
+        let targetScale = 1.0;
+        let currentScale = 1.0;
+        
+        let targetSceneRotY = 0;
+        let targetSceneRotX = 0;
+        let isHandPresent = false;
+
+        function getDistance(p1, p2) {
+            return Math.sqrt(Math.pow(p1.x - p2.x, 2) + Math.pow(p1.y - p2.y, 2) + Math.pow(p1.z - p2.z, 2));
+        }
+
+        function onResults(results) {
+            document.getElementById('loading').style.display = 'none';
+
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                isHandPresent = true;
+                
+                // 修复：更新检测状态文本
+                camLabel.innerText = "Tracking active";
+                camLabel.style.color = "#00ff00";
+
+                const landmarks = results.multiHandLandmarks[0];
+                const refDist = getDistance(landmarks[0], landmarks[9]); 
+                
+                const tips = [8, 12, 16, 20];
+                let avgTipDist = 0;
+                tips.forEach(tip => {
+                    avgTipDist += getDistance(landmarks[tip], landmarks[0]);
+                });
+                avgTipDist /= tips.length;
+
+                const ratio = avgTipDist / refDist;
+                let openness = (ratio - 1.2) / (2.8 - 1.2);
+                openness = Math.max(0, Math.min(1, openness));
+                
+                targetScale = 0.6 + openness * 6.4;
+
+                let handX = landmarks[9].x; 
+                let handY = landmarks[9].y;
+                
+                targetSceneRotY = -(handX - 0.5) * Math.PI * 3.5; 
+                targetSceneRotX = (handY - 0.5) * Math.PI * 2.0;
+
+            } else {
+                isHandPresent = false;
+                
+                // 修复：更新未检测状态文本
+                camLabel.innerText = "Tracking inactive";
+                camLabel.style.color = "#ffcc00";
+
+                targetScale = 1.0;
+            }
+        }
+
+        const hands = new Hands({locateFile: (file) => {
+            return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
+        }});
+        hands.setOptions({
+            maxNumHands: 1,
+            modelComplexity: 1,
+            minDetectionConfidence: 0.6,
+            minTrackingConfidence: 0.6
+        });
+        hands.onResults(onResults);
+
+        const cameraFeed = new Camera(videoElement, {
+            onFrame: async () => {
+                await hands.send({image: videoElement});
+            },
+            width: 320,
+            height: 240
+        });
+        cameraFeed.start();
+
+        // ==========================================
+        // 8. 渲染与物理循环
+        // ==========================================
+        const clock = new THREE.Clock();
+        let currentEarthRot = 0;
+
+        function animate() {
+            requestAnimationFrame(animate);
+            const elapsedTime = clock.getElapsedTime();
+
+            currentScale += (targetScale - currentScale) * 0.08;
+            uniforms.uTime.value = elapsedTime;
+            uniforms.uScale.value = currentScale;
+
+            // 【重中之重，修复Bug】将插值计算好的 Scale 正确应用给纯物理地球模型！
+            solidEarthMesh.scale.set(currentScale, currentScale, currentScale);
+
+            if (!isHandPresent) {
+                currentEarthRot -= 0.002; 
+                targetSceneRotY += 0.002; 
+                targetSceneRotX += (0 - targetSceneRotX) * 0.02; 
+            }
+
+            // 同步自转角度
+            solidEarthMesh.rotation.y = currentEarthRot;
+            uniforms.uEarthRot.value = currentEarthRot;
+
+            hologramGroup.rotation.y += (targetSceneRotY - hologramGroup.rotation.y) * 0.05;
+            hologramGroup.rotation.x += (targetSceneRotX - hologramGroup.rotation.x) * 0.05;
+
+            const moonOrbitRadius = 6.8;
+            // 放慢公转（约 3 分钟一圈），使月相在演示中保持接近 HUD 显示的今日相位
+            const moonOmega = (Math.PI * 2) / 180;
+            const moonAngle = MOON_BASE_ANGLE + elapsedTime * moonOmega;
+            moon.position.x = Math.sin(moonAngle) * moonOrbitRadius;
+            moon.position.z = Math.cos(moonAngle) * moonOrbitRadius;
+            // 潮汐锁定：始终以同一面朝向地球（hologramGroup 原点）
+            moon.rotation.y = moonAngle + Math.PI; 
+
+            composer.render();
+        }
+
+        animate();
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            composer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        const fullscreenBtn = document.getElementById('fullscreen-btn');
+        fullscreenBtn.addEventListener('click', () => {
+            if (!document.fullscreenElement) {
+                document.documentElement.requestFullscreen().catch(err => {
+                    console.log(`Error attempting to enable full-screen mode: ${err.message}`);
+                });
+                fullscreenBtn.innerText = "EXIT FULLSCREEN";
+            } else {
+                document.exitFullscreen();
+                fullscreenBtn.innerText = "FULLSCREEN";
+            }
+        });
+
+    </script>
+</body>
+</html>
