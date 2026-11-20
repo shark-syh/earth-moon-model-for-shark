@@ -225,6 +225,7 @@
 
         <div id="btn-group">
             <button id="mode-btn" class="ctrl-btn">Mode: Solid Model</button>
+            <button id="force-btn" class="ctrl-btn">Force: Attract</button>
             <button id="fullscreen-btn" class="ctrl-btn">Fullscreen</button>
         </div>
     </div>
@@ -412,7 +413,10 @@
             uniform float uScale;
             uniform float uEarthRot;    
             uniform sampler2D uDispTex; 
-            
+            uniform vec3 uPointer;       // 指尖引力源（物体局部空间）
+            uniform float uPointerAmt;   // 引力强度，正=吸引 负=排斥
+            uniform float uBurst;        // 塌缩-炸开脉冲 0..1
+
             attribute float size;
             attribute vec2 uvCoord;    
             
@@ -486,6 +490,22 @@
 
                 vWorldPos = (modelMatrix * vec4(pos * uScale, 1.0)).xyz;
                 vNormal = normalize((modelMatrix * vec4(objectNormal, 0.0)).xyz);
+
+                // 手指引力/斥力：pos 与 uPointer 同在物体原始空间（半径≈3）
+                if (abs(uPointerAmt) > 0.001) {
+                    vec3 toPointer = uPointer - pos;
+                    float d = length(toPointer);
+                    float falloff = exp(-d * d * 0.9);        // 近处影响强
+                    pos += normalize(toPointer + 1e-5) * uPointerAmt * falloff * 2.2;
+                }
+
+                // 塌缩-炸开脉冲：先向球心塌缩，再向外炸开
+                if (uBurst > 0.001) {
+                    float collapse = sin(uBurst * 3.14159265);          // 0→峰值→0
+                    pos *= (1.0 - 0.7 * collapse);                      // 向心塌缩
+                    vec3 dir = normalize(pos + vec3(0.0001));
+                    pos += dir * collapse * (1.0 - uBurst) * 4.0;       // 炸开
+                }
 
                 pos *= uScale;
 
@@ -589,7 +609,10 @@
             uEarthRot: { value: 0.0 }, 
             uEarthTex: { value: earthTexture },
             uDispTex: { value: earthDispTexture },
-            uSubsolar: subsolarUniform
+            uSubsolar: subsolarUniform,
+            uPointer: { value: new THREE.Vector3(0, 0, 100) },
+            uPointerAmt: { value: 0.0 },
+            uBurst: { value: 0.0 }
         };
 
         const earthMaterial = new THREE.ShaderMaterial({
@@ -850,6 +873,16 @@
         const fyFilter = new OneEuroFilter(30, 1.2, 0.02, 1.0);
         const fRatioFilter = new OneEuroFilter(30, 1.5, 0.01, 1.0);
 
+        // 粒子交互：引力源 + 捏合爆炸
+        let forceAttract = true;              // true=吸引 false=排斥
+        let pointerNdc = new THREE.Vector2(0, 0);  // 指尖归一化屏幕坐标 -1..1
+        let pointerActive = false;            // 手是否在场
+        let pinchActive = false;              // 当前是否捏合（防重复触发）
+        let burstStart = -1e9;                // 上次爆炸触发时间
+        const _raycasterPoint = new THREE.Vector3();
+        const _rayDir = new THREE.Vector3();
+        const _pointerLocal = new THREE.Vector3();
+
         function getDistance(p1, p2) {
             return Math.sqrt(Math.pow(p1.x - p2.x, 2) + Math.pow(p1.y - p2.y, 2) + Math.pow(p1.z - p2.z, 2));
         }
@@ -889,8 +922,20 @@
                 targetRotY = CHINA_FACING_Y - (handX - 0.5) * Math.PI * 5.0;
                 targetRotX = Math.max(-1.0, Math.min(1.0, (handY - 0.5) * Math.PI * 1.2));
 
+                // 粒子引力源：食指指尖(8) 的屏幕坐标 → NDC（MediaPipe y 向下）
+                pointerNdc.set(landmarks[8].x * 2 - 1, -(landmarks[8].y * 2 - 1));
+                pointerActive = true;
+
+                // 捏合检测：拇指(4)-食指(8) 距离 / 手参考距离，小于阈值视为捏合
+                const pinch = getDistance(landmarks[4], landmarks[8]) / refDist;
+                const pinching = pinch < 0.35;
+                if (pinching && !pinchActive) burstStart = performance.now();  // 捏合瞬间触发
+                pinchActive = pinching;
+
             } else {
                 isHandPresent = false;
+                pointerActive = false;
+                pinchActive = false;
                 fxFilter.reset(); fyFilter.reset(); fRatioFilter.reset();
                 
                 // 修复：更新未检测状态文本
@@ -980,6 +1025,34 @@
             const showCities = !isParticleMode && currentScale >= CITY_SHOW_SCALE;
             cityGroup.visible = showCities;
             hologramGroup.updateMatrixWorld(true);
+
+            // 粒子交互：指尖射线与地球球面求交 → 物体局部空间的引力点
+            if (pointerActive && isParticleMode) {
+                _raycasterPoint.set(pointerNdc.x, pointerNdc.y, 0.5).unproject(camera);
+                _rayDir.copy(_raycasterPoint).sub(camera.position).normalize();
+                // 射线 originate=camera.position, 求与半径 R 球的最近正交点（近似投影到球）
+                const R = 3.0 * uniforms.uScale.value;
+                const oc = camera.position;
+                const b = oc.dot(_rayDir);
+                const c = oc.dot(oc) - R * R;
+                const disc = b * b - c;
+                let tHit = disc > 0 ? (-b - Math.sqrt(disc)) : -b;   // 无交点则取最近点
+                tHit = Math.max(0.1, tHit);
+                _raycasterPoint.copy(oc).addScaledVector(_rayDir, tHit);
+                // 世界 → 粒子物体空间（粒子继承 hologramGroup 变换），再除以 uScale 回到原始球面空间
+                _pointerLocal.copy(_raycasterPoint);
+                hologramGroup.worldToLocal(_pointerLocal);
+                _pointerLocal.multiplyScalar(1.0 / uniforms.uScale.value);
+                uniforms.uPointer.value.copy(_pointerLocal);
+                uniforms.uPointerAmt.value = forceAttract ? 0.9 : -0.9;
+            } else {
+                uniforms.uPointerAmt.value = 0.0;
+            }
+
+            // 捏合爆炸脉冲：1.2 秒内从 1 衰减到 0
+            const burstAge = (performance.now() - burstStart) / 1200;
+            uniforms.uBurst.value = (burstAge >= 0 && burstAge < 1 && isParticleMode) ? (1 - burstAge) : 0.0;
+
             for (const cm of cityMarkers) {
                 if (!showCities) { cm.label.style.display = 'none'; continue; }
                 cm.mesh.getWorldPosition(_cityWorld);
@@ -1015,6 +1088,12 @@
             camera.updateProjectionMatrix();
             renderer.setSize(window.innerWidth, window.innerHeight);
             composer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        const forceBtn = document.getElementById('force-btn');
+        forceBtn.addEventListener('click', () => {
+            forceAttract = !forceAttract;
+            forceBtn.innerText = forceAttract ? "Force: Attract" : "Force: Repel";
         });
 
         const fullscreenBtn = document.getElementById('fullscreen-btn');
