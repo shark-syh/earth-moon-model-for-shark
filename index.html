@@ -246,10 +246,12 @@
         
         const earthTexUrl = 'https://cdn.jsdelivr.net/npm/three-globe/example/img/earth-blue-marble.jpg';
         const earthDispUrl = 'https://cdn.jsdelivr.net/npm/three-globe/example/img/earth-topology.png';
+        const earthNightUrl = 'https://cdn.jsdelivr.net/npm/three-globe/example/img/earth-night.jpg';
         const moonTexUrl = 'https://cdn.jsdelivr.net/gh/mrdoob/three.js@master/examples/textures/planets/moon_1024.jpg';
         
         const earthTexture = textureLoader.load(earthTexUrl);
         const earthDispTexture = textureLoader.load(earthDispUrl);
+        const earthNightTexture = textureLoader.load(earthNightUrl);
         const moonTexture = textureLoader.load(moonTexUrl);
 
         // ==========================================
@@ -331,7 +333,7 @@
         }
 
         let sub = subsolarPoint(new Date());
-        const astroMoon = moonPhase(new Date());
+        let astroMoon = moonPhase(new Date());
 
         // 太阳本地方向（与地表经纬度同坐标系）：X=0°经线, -Z=90°E, Y=北极
         const sunLocalDir = new THREE.Vector3(
@@ -493,6 +495,7 @@
 
         const fragmentShader = `
             uniform sampler2D uEarthTex;
+            uniform sampler2D uNightTex;
             uniform vec2 uSubsolar;      // (直射纬度, 直射经度)，弧度
             
             varying float vBrightness;
@@ -520,8 +523,10 @@
                 float day = smoothstep(-0.09, 0.09, sinAlt);
 
                 vec3 texColor = texture2D(uEarthTex, vUv).rgb;
+                vec3 nightTex = texture2D(uNightTex, vUv).rgb;
                 vec3 dayColor = texColor * (0.35 + 0.75 * max(sinAlt, 0.0));
-                vec3 nightColor = texColor * 0.05 * vec3(0.55, 0.70, 1.0);
+                // 夜面：真实城市灯光（夜景贴图本身已含深蓝海洋与灯光）
+                vec3 nightColor = nightTex * 1.15 + vec3(0.005, 0.010, 0.02);
                 vec3 finalColor = mix(nightColor, dayColor, day);
                 
                 gl_FragColor = vec4(finalColor * vBrightness, alpha);
@@ -568,6 +573,7 @@
             uEarthRot: { value: 0.0 }, 
             uEarthTex: { value: earthTexture },
             uDispTex: { value: earthDispTexture },
+            uNightTex: { value: earthNightTexture },
             uSubsolar: subsolarUniform
         };
 
@@ -603,6 +609,7 @@
         `;
         const solidFragmentShader = `
             uniform sampler2D uEarthTex;
+            uniform sampler2D uNightTex;
             uniform vec2 uSubsolar;      // (直射纬度, 直射经度)，弧度
             varying vec2 vUv;
             varying vec3 vWorldNormal;
@@ -622,8 +629,10 @@
                 float day = smoothstep(-0.09, 0.09, sinAlt);
 
                 vec3 tex = texture2D(uEarthTex, vUv).rgb;
+                vec3 nightTex = texture2D(uNightTex, vUv).rgb;
                 vec3 dayColor = tex * (0.32 + 0.8 * max(sinAlt, 0.0));
-                vec3 nightColor = tex * 0.045 * vec3(0.55, 0.70, 1.0);
+                // 夜面：真实城市灯光
+                vec3 nightColor = nightTex * 1.15 + vec3(0.005, 0.010, 0.02);
 
                 vec3 color = mix(nightColor, dayColor, day);
                 gl_FragColor = vec4(color, 1.0);
@@ -634,6 +643,7 @@
             uniforms: {
                 uEarthTex: { value: earthTexture },
                 uDispTex: { value: earthDispTexture },
+                uNightTex: { value: earthNightTexture },
                 uSubsolar: subsolarUniform
             },
             vertexShader: solidVertexShader,
@@ -715,9 +725,7 @@
         const moon = new THREE.Mesh(moonGeo, moonMat);
         hologramGroup.add(moon);
 
-        // 月球初始轨道角：对齐到今天的真实月相（伸长 elong）
-        const sunAzimuth = Math.atan2(sunLocalDir.x, sunLocalDir.z);
-        const MOON_BASE_ANGLE = sunAzimuth + astroMoon.elong * DEG;
+        // 月球位置在渲染循环中按真实时间计算（见 animate）
 
         // ==========================================
         // 6. 宇宙深空
@@ -748,6 +756,48 @@
         let targetRotX = 0;
         let isHandPresent = false;
 
+        // One Euro Filter：静止时强平滑、快速移动时弱滤波，减少抖动又跟手
+        class LowPassFilter {
+            constructor() { this.y = null; this.s = null; }
+            lastValue() { return this.y; }
+            filter(value, alpha) {
+                if (this.y === null) { this.s = value; }
+                else { this.s = alpha * value + (1 - alpha) * this.s; }
+                this.y = value;   // 保存原始上帧值供求导
+                return this.s;
+            }
+            reset() { this.y = null; this.s = null; }
+        }
+        class OneEuroFilter {
+            constructor(freq, minCutoff, beta, dCutoff) {
+                this.freq = freq; this.minCutoff = minCutoff;
+                this.beta = beta; this.dCutoff = dCutoff;
+                this.xf = new LowPassFilter();
+                this.dxf = new LowPassFilter();
+                this.lastTime = null;
+            }
+            alpha(cutoff) {
+                const tau = 1 / (2 * Math.PI * cutoff);
+                const te = 1 / this.freq;
+                return 1 / (1 + tau / te);
+            }
+            filter(value, t) {
+                if (this.lastTime === null) this.lastTime = t;
+                const dt = Math.max((t - this.lastTime) / 1000, 1 / this.freq);
+                this.lastTime = t;
+                const prev = this.xf.s;
+                let dx = prev === null ? 0 : (value - prev) / dt;
+                const edx = this.dxf.filter(dx, this.alpha(this.dCutoff));
+                const cutoff = this.minCutoff + this.beta * Math.abs(edx);
+                return this.xf.filter(value, this.alpha(cutoff));
+            }
+            reset() { this.xf.reset(); this.dxf.reset(); this.lastTime = null; }
+        }
+        // freq≈30fps, minCutoff 越小越平滑, beta 越大越跟手
+        const fxFilter = new OneEuroFilter(30, 1.2, 0.02, 1.0);
+        const fyFilter = new OneEuroFilter(30, 1.2, 0.02, 1.0);
+        const fRatioFilter = new OneEuroFilter(30, 1.5, 0.01, 1.0);
+
         function getDistance(p1, p2) {
             return Math.sqrt(Math.pow(p1.x - p2.x, 2) + Math.pow(p1.y - p2.y, 2) + Math.pow(p1.z - p2.z, 2));
         }
@@ -773,20 +823,23 @@
                 avgTipDist /= tips.length;
 
                 const ratio = avgTipDist / refDist;
-                let openness = (ratio - 1.2) / (2.8 - 1.2);
+                const t = performance.now();
+                const fRatio = fRatioFilter.filter(ratio, t);
+                let openness = (fRatio - 1.2) / (2.8 - 1.2);
                 openness = Math.max(0, Math.min(1, openness));
                 
                 targetScale = 0.6 + openness * 6.4;
 
-                // 左右拖动 → 地球绕 Y 轴转动（仅演示视角），晨昏线地理分布不变
+                // 滤波后的手部位置 → 地球旋转（仅演示视角），晨昏线地理分布不变
+                const handX = fxFilter.filter(landmarks[9].x, t);
+                const handY = fyFilter.filter(landmarks[9].y, t);
                 // 手部 x 实际可用范围窄，放大系数以获得更大转角
-                const handX = landmarks[9].x;
-                const handY = landmarks[9].y;
                 targetRotY = CHINA_FACING_Y - (handX - 0.5) * Math.PI * 5.0;
                 targetRotX = Math.max(-1.0, Math.min(1.0, (handY - 0.5) * Math.PI * 1.2));
 
             } else {
                 isHandPresent = false;
+                fxFilter.reset(); fyFilter.reset(); fRatioFilter.reset();
                 
                 // 修复：更新未检测状态文本
                 camLabel.innerText = "Tracking inactive";
@@ -837,6 +890,7 @@
             if (elapsedTime - lastSubUpdate > 30) {
                 lastSubUpdate = elapsedTime;
                 sub = subsolarPoint(new Date());
+                astroMoon = moonPhase(new Date());
                 subsolarUniform.value.set(sub.lat, sub.lon);
                 sunLocalDir.set(
                     Math.cos(sub.lat) * Math.cos(sub.lon),
@@ -859,10 +913,12 @@
             camera.position.set(0, 0, camRadius);
             camera.lookAt(0, 0, 0);
 
+            // 月球位置锁定真实时间：相位角取当前时刻，朔望月 29.53 天一圈
+            // 这样月相始终与 HUD 的「今日月相」一致，不再按演示速度漂移
             const moonOrbitRadius = 6.8;
-            // 放慢公转（约 3 分钟一圈），使月相在演示中保持接近 HUD 显示的今日相位
-            const moonOmega = (Math.PI * 2) / 180;
-            const moonAngle = MOON_BASE_ANGLE + elapsedTime * moonOmega;
+            const nowMoon = moonPhase(new Date());
+            const curSunAz = Math.atan2(sunLocalDir.x, sunLocalDir.z);
+            const moonAngle = curSunAz + nowMoon.elong * DEG;
             moon.position.x = Math.sin(moonAngle) * moonOrbitRadius;
             moon.position.z = Math.cos(moonAngle) * moonOrbitRadius;
             // 潮汐锁定：始终以同一面朝向地球（hologramGroup 原点）
