@@ -246,12 +246,10 @@
         
         const earthTexUrl = 'https://cdn.jsdelivr.net/npm/three-globe/example/img/earth-blue-marble.jpg';
         const earthDispUrl = 'https://cdn.jsdelivr.net/npm/three-globe/example/img/earth-topology.png';
-        const earthNightUrl = 'https://cdn.jsdelivr.net/npm/three-globe/example/img/earth-night.jpg';
         const moonTexUrl = 'https://cdn.jsdelivr.net/gh/mrdoob/three.js@master/examples/textures/planets/moon_1024.jpg';
         
         const earthTexture = textureLoader.load(earthTexUrl);
         const earthDispTexture = textureLoader.load(earthDispUrl);
-        const earthNightTexture = textureLoader.load(earthNightUrl);
         const moonTexture = textureLoader.load(moonTexUrl);
 
         // ==========================================
@@ -495,7 +493,6 @@
 
         const fragmentShader = `
             uniform sampler2D uEarthTex;
-            uniform sampler2D uNightTex;
             uniform vec2 uSubsolar;      // (直射纬度, 直射经度)，弧度
             
             varying float vBrightness;
@@ -523,10 +520,8 @@
                 float day = smoothstep(-0.09, 0.09, sinAlt);
 
                 vec3 texColor = texture2D(uEarthTex, vUv).rgb;
-                vec3 nightTex = texture2D(uNightTex, vUv).rgb;
                 vec3 dayColor = texColor * (0.35 + 0.75 * max(sinAlt, 0.0));
-                // 夜面：真实城市灯光（夜景贴图本身已含深蓝海洋与灯光）
-                vec3 nightColor = nightTex * 1.15 + vec3(0.005, 0.010, 0.02);
+                vec3 nightColor = texColor * 0.05 * vec3(0.55, 0.70, 1.0);
                 vec3 finalColor = mix(nightColor, dayColor, day);
                 
                 gl_FragColor = vec4(finalColor * vBrightness, alpha);
@@ -573,7 +568,6 @@
             uEarthRot: { value: 0.0 }, 
             uEarthTex: { value: earthTexture },
             uDispTex: { value: earthDispTexture },
-            uNightTex: { value: earthNightTexture },
             uSubsolar: subsolarUniform
         };
 
@@ -609,7 +603,6 @@
         `;
         const solidFragmentShader = `
             uniform sampler2D uEarthTex;
-            uniform sampler2D uNightTex;
             uniform vec2 uSubsolar;      // (直射纬度, 直射经度)，弧度
             varying vec2 vUv;
             varying vec3 vWorldNormal;
@@ -629,10 +622,8 @@
                 float day = smoothstep(-0.09, 0.09, sinAlt);
 
                 vec3 tex = texture2D(uEarthTex, vUv).rgb;
-                vec3 nightTex = texture2D(uNightTex, vUv).rgb;
                 vec3 dayColor = tex * (0.32 + 0.8 * max(sinAlt, 0.0));
-                // 夜面：真实城市灯光
-                vec3 nightColor = nightTex * 1.15 + vec3(0.005, 0.010, 0.02);
+                vec3 nightColor = tex * 0.045 * vec3(0.55, 0.70, 1.0);
 
                 vec3 color = mix(nightColor, dayColor, day);
                 gl_FragColor = vec4(color, 1.0);
@@ -643,7 +634,6 @@
             uniforms: {
                 uEarthTex: { value: earthTexture },
                 uDispTex: { value: earthDispTexture },
-                uNightTex: { value: earthNightTexture },
                 uSubsolar: subsolarUniform
             },
             vertexShader: solidVertexShader,
