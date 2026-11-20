@@ -516,14 +516,13 @@
                 float sinAlt = sin(lat) * sin(uSubsolar.x)
                              + cos(lat) * cos(uSubsolar.x) * cos(lon - uSubsolar.y);
                 
-                // 真实晨昏线：sinAlt=0 为晨昏圈，与模型旋转无关
-                float day = smoothstep(-0.01, 0.02, sinAlt);
-                float twilight = smoothstep(-0.14, -0.01, sinAlt) * (1.0 - smoothstep(0.01, 0.16, sinAlt));
+                // 真实晨昏线：sinAlt=0 为晨昏圈，柔和自然过渡
+                float day = smoothstep(-0.09, 0.09, sinAlt);
 
                 vec3 texColor = texture2D(uEarthTex, vUv).rgb;
                 vec3 dayColor = texColor * (0.35 + 0.75 * max(sinAlt, 0.0));
-                vec3 nightColor = texColor * 0.045 * vec3(0.55, 0.70, 1.0);
-                vec3 finalColor = mix(nightColor, dayColor, day) + vec3(1.0, 0.42, 0.15) * twilight * 0.45;
+                vec3 nightColor = texColor * 0.05 * vec3(0.55, 0.70, 1.0);
+                vec3 finalColor = mix(nightColor, dayColor, day);
                 
                 gl_FragColor = vec4(finalColor * vBrightness, alpha);
             }
@@ -619,16 +618,14 @@
                 float sinAlt = sin(lat) * sin(uSubsolar.x)
                              + cos(lat) * cos(uSubsolar.x) * cos(lon - uSubsolar.y);
 
-                // 真实晨昏线：sinAlt=0 为晨昏圈，与模型旋转无关
-                float day = smoothstep(-0.01, 0.02, sinAlt);
-                float twilight = smoothstep(-0.14, -0.01, sinAlt) * (1.0 - smoothstep(0.01, 0.16, sinAlt));
+                // 真实晨昏线：sinAlt=0 为晨昏圈，柔和自然过渡
+                float day = smoothstep(-0.09, 0.09, sinAlt);
 
                 vec3 tex = texture2D(uEarthTex, vUv).rgb;
                 vec3 dayColor = tex * (0.32 + 0.8 * max(sinAlt, 0.0));
-                vec3 twiColor = vec3(1.0, 0.42, 0.15) * twilight * 0.5;
-                vec3 nightColor = tex * 0.04 * vec3(0.55, 0.70, 1.0);
+                vec3 nightColor = tex * 0.045 * vec3(0.55, 0.70, 1.0);
 
-                vec3 color = mix(nightColor, dayColor, day) + twiColor;
+                vec3 color = mix(nightColor, dayColor, day);
                 gl_FragColor = vec4(color, 1.0);
             }
         `;
